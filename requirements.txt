@@ -1,12 +1,11 @@
-# Runtime dependencies for Raspberry Pi 5 (64-bit ARM)
-# Picamera2/libcamera and GPIO backend are installed via APT; see README.md.
+# Raspberry Pi 5 runtime dependencies.
+# YOLO inference is performed by ONNX Runtime; PyTorch/Ultralytics are NOT
+# required on the Pi. Install the optional model-export tools separately.
 numpy>=1.26,<3
-opencv-python-headless>=4.9,<5
+opencv-python>=4.9,<5
 onnxruntime>=1.17,<2
 pytesseract>=0.3.10,<0.4
-gpiozero>=2.0,<3
 PyYAML>=6.0,<7
-huggingface_hub>=0.23,<2  # загрузка готовых весов из Hugging Face
-libcap-dev
-picamera2
-python3-opencv
+huggingface_hub>=0.23,<2
+rpi-hardware-pwm>=0.2.2,<0.3
+fast-plate-ocr>=0.3,<0.4  # 0.3.x API: ONNXPlateRecognizer

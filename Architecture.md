@@ -1,567 +1,358 @@
-# Архитектура проекта RPI-Plate-Recognition
+# Архитектура RPI-Plate-Recognition
 
----
+Документ описывает состояние ветки `main` и сверён с файлами репозитория. Основной runtime находится в `barrier/src/`; вспомогательный Windows-подпроект — в `barrier/windows/`.
 
-## Обзор проекта
+## 1. Назначение и границы системы
 
-Проект реализует систему распознавания автомобильных номеров для управления шлагбаумом на Raspberry Pi 5.
+Основной сценарий: камера получает изображение → детекторы находят транспорт и номер → OCR преобразует crop номера в строку → AccessControl проверяет строку по whitelist и правилам подтверждения → Barrier управляет сервоприводом.
 
-**Две реализации:**
-1. **barrier/** — Полная целевая реализация для Raspberry Pi (runtime)
-2. **barrier/windows/** — Windows-подпроект для оценки качества детекции и OCR (диагностика)
+Компоненты не являются системой промышленной безопасности. В проекте нет датчика положения стрелы, концевых выключателей, фотоэлемента/индукционной петли, контроля защемления или аппаратного аварийного контура. Присутствие транспортного средства определяется только компьютерным зрением.
 
-### Основные компоненты (barrier/)
+## 2. Фактическая структура репозитория
 
-| Компонент | Файл | Назначение |
-|-----------|------|------------|
-| Главная система | src/main.py | LicensePlateSystem — оркестратор всех компонентов |
-| Камера | src/camera.py | Camera — Picamera2 wrapper (RGB888, 640x480) |
-| Детекция | src/detector.py | PlateDetector — YOLO11n ONNX через ONNX Runtime |
-| OCR | src/ocr.py | PlateOCR — Tesseract с 8 вариантами предобработки + голосование |
-| Контроль доступа | src/access_control.py | AccessControl — whitelist, подтверждения, cooldown |
-| Шлагбаум | src/barrier.py | Barrier — SG-90 через gpiozero.AngularServo |
-| Логирование | src/logger.py | setup_logger — rotating file + console |
-| Конфигурация | config/settings.yaml | YAML настройки всех подсистем |
-| Whitelist | config/allowed_plates.txt | Разрешённые номера (по одному на строку) |
-| Модели | models/*.onnx | YOLO11n/s/m/l веса (v1n рекомендуется для Pi 5) |
-
----
-
-## Файловая структура (полная)
-
-```
-RPI-Plate-Recognition/
+```text
+.
 ├── README.md
 ├── Architecture.md
 ├── requirements.txt
+├── requirements-model-tools.txt
 ├── .gitignore
-├── barrier/
-│   ├── config/
-│   │   ├── settings.yaml              # все настройки системы
-│   │   └── allowed_plates.txt         # whitelist: 6 номеров
-│   ├── models/
-│   │   ├── license-plate-finetune-v1n.onnx   # 10.5 MB (рекомендуется)
-│   │   ├── license-plate-finetune-v1n.pt     # 5.5 MB
-│   │   ├── license-plate-finetune-v1s.onnx   # 37.8 MB
-│   │   ├── license-plate-finetune-v1m.onnx   # 80.3 MB
-│   │   ├── license-plate-finetune-v1m.pt     # 40.5 MB
-│   │   └── license-plate-finetune-v1l.onnx   # 101 MB
-│   ├── src/
-│   │   ├── __init__.py
-│   │   ├── main.py                    # LicensePlateSystem + CLI
-│   │   ├── camera.py                  # Picamera2 wrapper
-│   │   ├── detector.py                # PlateDetector (ONNX YOLO)
-│   │   ├── ocr.py                     # PlateOCR (Tesseract + голосование)
-│   │   ├── access_control.py          # AccessControl (whitelist + подтверждения)
-│   │   ├── barrier.py                 # Barrier (gpiozero SG-90)
-│   │   └── logger.py                  # RotatingFileHandler + console
-│   ├── tests/
-│   │   ├── test_access_control.py     # whitelist, подтверждения, сброс
-│   │   └── test_plate_normalization.py # normalize() тесты
-│   └── data/                          # создаётся в runtime
-│       ├── captures/
-│       └── logs/
-└── barrier/windows/                   # Windows-оценка качества
-    ├── .venv/
-    ├── config/settings.yaml
-    ├── dataset/images/ + labels.csv
-    ├── results/ (annotated, crops, rectification)
-    ├── src/ (main.py, detector.py, ocr.py, evaluate.py)
-    └── tests/ (4 диагностических скрипта)
+└── barrier/
+    ├── config/
+    │   ├── settings.yaml
+    │   └── allowed_plates.txt
+    ├── models/
+    │   ├── license-plate-finetune-v1l.onnx
+    │   ├── license-plate-finetune-v1m.onnx
+    │   ├── license-plate-finetune-v1m.pt
+    │   ├── license-plate-finetune-v1n.onnx
+    │   ├── license-plate-finetune-v1n.pt
+    │   ├── license-plate-finetune-v1s.onnx
+    │   ├── yolov8n.onnx
+    │   └── yolov8n.pt
+    ├── src/
+    │   ├── __init__.py
+    │   ├── access_control.py
+    │   ├── barrier.py
+    │   ├── camera.py
+    │   ├── detector.py
+    │   ├── logger.py
+    │   ├── main.py
+    │   └── ocr.py
+    ├── tests/
+    │   ├── test_access_control.py
+    │   └── test_plate_normalization.py
+    └── windows/
+        ├── .gitignore
+        ├── README.md
+        ├── config/settings.yaml
+        ├── dataset/
+        │   ├── images/1.jpg ... 4.jpg
+        │   └── labels.csv
+        ├── requirements.txt
+        ├── src/
+        │   ├── __init__.py
+        │   ├── detector.py
+        │   ├── evaluate.py
+        │   ├── main.py
+        │   └── ocr.py
+        └── tests/
+            ├── __init__.py
+            ├── test_normalization.py
+            ├── test_ocr.py
+            ├── test_ocr_1.py
+            └── test_rectification.py
 ```
 
----
-
-## Детальное описание каждого файла (barrier/)
-
----
-
-### 1. barrier/src/main.py
-
-**Назначение**: Главная точка входа — класс LicensePlateSystem оркестрирует все компоненты в runtime режиме.
-
-#### Класс LicensePlateSystem
-
-##### Конструктор __init__()
-
-Инициализирует все подсистемы из config/settings.yaml:
-
-| Подсистема | Конфиг секция | Параметры |
-|------------|---------------|-----------|
-| Camera | camera | width=640, height=480 |
-| Detector | detector | model_path, input_size=640, confidence=0.45, nms_threshold=0.45 |
-| OCR | ocr | language=eng, min_confidence=0 |
-| AccessControl | access | allowed_plates_file, required_confirmations=1, cooldown_seconds=1 |
-| Barrier | barrier | gpio_pin=18, closed_angle=180, opened_angle=90, open_duration=7 |
-| Processing | processing | interval_seconds=2 |
-
-**Атрибуты состояния**:
-- frame_lock — threading.Lock для синхронизации кадров
-- latest_frame — последний кадр от камеры
-- result_frame — кадр с аннотацией для отображения
-- result_until — timestamp до которого показывать результат
-- stop_event — threading.Event для graceful shutdown
-- worker — фоновый поток recognition_worker
-
-##### Метод load_config() — staticmethod
-
-Загружает config/settings.yaml относительно PROJECT_DIR.
-
-##### Метод recognition_worker() — фоновый поток
-
-**Алгоритм** (каждые processing_interval секунд, по умолчанию 2с):
-
-1. Берёт копию кадра под frame_lock
-2. YOLO detection — detector.detect(frame) → список боксов
-3. Сортировка по confidence (desc)
-4. Barrier vehicle_present — barrier.update(vehicle_present=len(detections)>0)
-5. Для каждого бокса (берёт только первый валидный):
-   - Crop области номера
-   - ocr.recognize(crop) → plate string
-   - Аннотирует кадр (зелёный бокс + текст номера)
-   - access.confirm_plate(plate) → если True: barrier.open_for(), лог "ACCESS GRANTED"
-6. Если ничего не распознано — access.confirm_plate("") (сброс счётчика)
-7. Ожидание stop_event.wait(processing_interval)
-
-##### Метод run() — главный цикл (main thread)
-
-1. camera.start(), barrier.close()
-2. Запускает recognition_worker в daemon thread
-3. OpenCV window loop:
-   - camera.read() → обновляет latest_frame под lock
-   - Показывает result_frame если не устарел, иначе live frame
-   - cv2.waitKey(1) — выход по 'q'
-4. Graceful shutdown в finally:
-   - stop_event.set(), worker.join(timeout=5)
-   - cv2.destroyAllWindows()
-   - camera.stop(), barrier.stop()
-
-##### Функция main()
-
-Создаёт LicensePlateSystem() и вызывает run().
-
----
-
-### 2. barrier/src/detector.py
-
-**Назначение**: PlateDetector — ONNX Runtime инференс YOLO модели.
-
-#### Конструктор __init__
-
-| Параметр | Тип | Default | Описание |
-|----------|-----|---------|----------|
-| model_path | str | — | Путь к .onnx |
-| input_size | int | 640 | Квадратный вход модели |
-| confidence | float | 0.45 | Порог фильтрации боксов |
-| nms_threshold | float | 0.45 | IoU для NMS |
-
-**Атрибуты**:
-- session — ort.InferenceSession(providers=["CPUExecutionProvider"])
-- input_name — имя входного тензора
-
-#### Метод detect(frame) → List[(x1,y1,x2,y2,conf)]
-
-**Letterbox preprocessing**:
-1. Масштаб scale = min(input_size/width, input_size/height)
-2. Resize с сохранением пропорций
-3. Padding серым (114) до input_size x input_size
-4. cv2.dnn.blobFromImage: scalefactor=1/255, swapRB=True (BGR→RGB)
-
-**Inference**: session.run(None, {input_name: blob})
-
-**Parsing** — _parse_output():
-
-| Формат выхода | Определение | Обработка |
-|---------------|-------------|-----------|
-| [N, 6] (x1,y1,x2,y2,conf,class) | output.shape[1] == 6 | Прямое чтение боксов |
-| YOLOv8/11 [4+classes, N] | иначе | Транспонирование при необходимости, cx,cy,w,h → x1,y1,x2,y2, max(class_scores) |
-
-**NMS**: cv2.dnn.NMSBoxes(boxes, scores, confidence, nms_threshold)
-
-**Coordinate mapping**: Обратное letterbox преобразование с clamp к исходным размерам.
-
-#### Возврат
-
-Список (x1, y1, x2, y2, confidence) в координатах исходного кадра.
-
----
-
-### 3. barrier/src/ocr.py
-
-**Назначение**: PlateOCR — Tesseract OCR с множественной предобработкой и голосованием.
-
-#### Константы модуля
-
-| Константа | Значение |
-|-----------|----------|
-| PLATE_LETTERS | "ABEKMHOPCTYX" (12 букв российских номеров) |
-| PLATE_PATTERN | ^[ABEKMHOPCTYX]\d{3}[ABEKMHOPCTYX]{2}$ |
-| CYRILLIC_TO_LATIN | 12 маппингов (А→A, В→B, Е→E, К→K, М→M, Н→H, О→O, Р→P, С→C, Т→T, У→Y, Х→X) |
-| DIGIT_MAP | O,Q,D→0; I,L→1; Z→2; S→5; B→8 |
-| LETTER_MAP | 0→O; 8→B; 4→A |
-| WHITELIST | A-Z0-9 |
-| PSM_MODES | (7, 8, 13, 6) — single line, word, raw, block |
-
-#### Методы класса
-
-##### normalize(text) — classmethod
-
-Верхний регистр + кириллица→латиница + только алфавитно-цифровые.
-
-##### extract_plate(text) — classmethod
-
-**Слайдинг окно 6 символов** с позиционными картами:
-- Позиция 0 (буква): LETTER_MAP
-- Позиции 1-3 (цифры): DIGIT_MAP
-- Позиции 4-5 (буквы): LETTER_MAP
-- Проверка PLATE_PATTERN.fullmatch()
-
-##### add_border(image) — staticmethod
-
-Белые поля: top/bottom 30px, left/right 40px.
-
-##### preprocess(plate_image) → 8 вариантов
-
-| Вариант | Описание |
-|---------|----------|
-| enlarged | 4x CUBIC |
-| enhanced | enlarged + CLAHE(2.0, 8x8) |
-| otsu_original | Otsu на сером |
-| otsu | Otsu на enhanced |
-| adaptive_21 | Gauss C=7, block=21 |
-| adaptive_31 | Gauss C=11, block=31 |
-| sharpened | Unsharp: enhanced*1.8 - blur*0.8 |
-| otsu_inverted | Инвертированный Otsu |
-
-Все через add_border().
-
-##### recognize_variant(image, psm) → (raw_text, plate, avg_conf)
-
-Tesseract с конфигом: --oem 3 --psm {psm} -c whitelist={WHITELIST}
-
-Возвращает: конкатенированные слова, извлечённый номер, средняя уверенность.
-
-##### recognize_variants(image) → best_plate
-
-**Голосование**:
-- Для каждого из 8 вариантов × 4 PSM = 32 попытки
-- Собирает candidates[plate] = [confidences...]
-- max(len(list), mean(confidences))
-
-##### recognize(plate_image) → str
-
-1. recognize_variants(plate_image)
-2. Если пусто — fallback: JPEG 95 quality → снова recognize_variants
-
----
-
-### 4. barrier/src/camera.py
-
-**Назначение**: Camera — обёртка над Picamera2.
-
-#### Конструктор
-
-| Параметр | Default |
-|----------|---------|
-| width | 640 |
-| height | 480 |
-
-#### Методы
-
-| Метод | Описание |
-|-------|----------|
-| start() | Picamera2(), create_video_configuration(RGB888, 640x480, buffer_count=2), start(), sleep(1.0) для автоэкспозиции |
-| read() | capture_array() → RGB → cv2.cvtColor(RGB2BGR) |
-| stop() | stop(), close(), camera = None |
-
----
-
-### 5. barrier/src/access_control.py
-
-**Назначение**: AccessControl — whitelist + подтверждения + cooldown.
-
-#### Конструктор
-
-| Параметр | Default | Описание |
-|----------|---------|----------|
-| allowed_plates_file | — | Путь к файлу |
-| required_confirmations | 2 | Сколько раз подряд распознать |
-| cooldown_seconds | 10.0 | Пауза после открытия |
-
-**Состояние**:
-- last_plate — последний распознанный нормализованный номер
-- confirmation_count — счётчик повторов
-- last_open_time — timestamp последнего открытия
-
-#### Методы
-
-##### normalize(plate) — classmethod
-
-Аналогично PlateOCR.normalize(): upper + кириллица→латиница + alnum.
-
-##### _load_allowed_plates() → set
-
-Читает файл, пропускает пустые и #, нормализует, возвращает set.
-
-##### is_allowed(plate) → bool
-
-Нормализует + проверка вхождения в allowed_plates.
-
-##### confirm_plate(plate) → bool
-
-**Алгоритм**:
-1. Нормализация
-2. Если не разрешён или пустой → сброс last_plate=None, count=0, return False
-3. Если тот же номер → count++, иначе last_plate=plate, count=1
-4. Если count < required_confirmations → False
-5. Cooldown check: now - last_open_time < cooldown → False
-6. last_open_time = now, count=0, last_plate=None, return True
-
----
-
-### 6. barrier/src/barrier.py
-
-**Назначение**: Barrier — управление SG-90 через gpiozero.AngularServo.
-
-#### Конструктор
-
-| Параметр | Default |
-|----------|---------|
-| gpio_pin | 18 |
-| closed_angle | 180 |
-| opened_angle | 90 |
-| open_duration | 5.0 сек |
-
-**Инициализация**: AngularServo(pin, min_angle=0, max_angle=180, min_pulse_width=0.5ms, max_pulse_width=2.5ms, initial_angle=closed_angle)
-
-#### Методы
-
-| Метод | Описание |
-|-------|----------|
-| open() | angle=opened_angle, is_open=True, close_at = now + open_duration |
-| close() | angle=closed_angle, is_open=False, close_at=None |
-| keep_open(duration) | Продлевает close_at если открыт |
-| update(vehicle_present) | Вызывается из worker: если vehicle_present → продлевает таймер; если нет и now >= close_at → close() |
-| open_for(duration) | Неблокирующий alias для совместимости |
-| stop() | close() + servo.close() |
-
----
-
-### 7. barrier/src/logger.py
-
-**Назначение**: setup_logger(name) — настройка логирования.
-
-**Конфигурация**:
-- Level: INFO
-- Format: %(asctime)s | %(levelname)s | %(name)s | %(message)s
-- Handlers: StreamHandler (console) + RotatingFileHandler(data/logs/barrier.log, maxBytes=2MB, backupCount=3)
-
----
-
-### 8. barrier/config/settings.yaml
-
-```yaml
-camera:
-  width: 640
-  height: 480
-
-detector:
-  model_path: models/license-plate-finetune-v1n.onnx
-  input_size: 640
-  confidence: 0.45
-  nms_threshold: 0.45
-
-ocr:
-  language: eng
-  min_confidence: 0
-
-access:
-  allowed_plates_file: config/allowed_plates.txt
-  required_confirmations: 1
-  cooldown_seconds: 1
-
-barrier:
-  gpio_pin: 18
-  closed_angle: 180
-  opened_angle: 90
-  open_duration: 7
-
-processing:
-  interval_seconds: 2
+Ветка `main` содержит все перечисленные восемь model-файлов. Размеры файлов из Git tree:
+
+| Файл | Размер |
+|---|---:|
+| `license-plate-finetune-v1l.onnx` | 101,390,463 bytes |
+| `license-plate-finetune-v1m.onnx` | 80,308,089 bytes |
+| `license-plate-finetune-v1m.pt` | 40,507,749 bytes |
+| `license-plate-finetune-v1n.onnx` | 10,481,682 bytes |
+| `license-plate-finetune-v1n.pt` | 5,465,235 bytes |
+| `license-plate-finetune-v1s.onnx` | 37,805,310 bytes |
+| `yolov8n.onnx` | 12,851,106 bytes |
+| `yolov8n.pt` | 6,549,796 bytes |
+
+Размеры — значения Git tree, а не измерения локальной файловой системы. В runtime используются только `license-plate-finetune-v1n.onnx` и `yolov8n.onnx`, заданные в YAML. PT-файлы не загружаются приложением.
+
+Каталоги `barrier/data/` и `barrier/windows/results/` создаются во время работы и отсутствуют в исходном дереве. Виртуальные окружения, кэш Python и результаты исключены через gitignore.
+
+## 3. Runtime-компоненты и функции
+
+### 3.1 `barrier/src/main.py` — LicensePlateSystem
+
+**Константы модуля**
+- `PROJECT_DIR`: вычисляется как родительский каталог `src`, то есть `barrier/`.
+- `CONFIG_PATH`: `barrier/config/settings.yaml`.
+
+**`LicensePlateSystem.__init__()`**
+- Создаёт логгер и загружает YAML.
+- Читает `display.enabled` (по умолчанию true).
+- Инициализирует Camera с заданными width/height.
+- Проверяет существование plate detector model и создаёт PlateDetector.
+- Проверяет существование vehicle detector model и создаёт второй PlateDetector с class IDs (2, 3, 5, 7).
+- Выбирает OCR backend по `ocr.backend`: FastPlateOCR или PlateOCR/Tesseract; неизвестное значение приводит к ValueError.
+- Проверяет файл whitelist и создаёт AccessControl.
+- Создаёт Barrier с PWM-настройками, углами, длительностью и необязательными точными импульсами.
+- Считывает processing interval.
+- Создаёт lock, event и разделяемые поля последнего кадра, детекций и распознанного текста.
+
+**`load_config()`**
+- Статический метод, проверяет наличие CONFIG_PATH и загружает YAML через `yaml.safe_load`.
+
+**`recognition_worker()`**
+- Работает в отдельном daemon thread до установки stop_event.
+- Берёт копию последнего кадра под frame_lock; если кадра ещё нет, ждёт 50 ms.
+- Последовательно запускает детектор транспорта и детектор номеров; записывает общее время обоих детекторов.
+- Публикует результаты детекции для GUI.
+- Сортирует номера по confidence.
+- Передаёт флаг наличия транспорта в Barrier.update().
+- Перебирает боксы номеров, ограничивает координаты размерами кадра, пропускает пустые crop.
+- Вызывает OCR и отдельно логирует длительность OCR.
+- При непустом результате логирует номер и confidence, обновляет отображаемую строку.
+- Вызывает AccessControl.confirm_plate(); при True логирует ACCESS GRANTED и вызывает неблокирующий Barrier.open_for().
+- После первого непустого OCR прекращает обработку боксов в текущем цикле.
+- Если номер не распознан, передаёт пустую строку в AccessControl, сбрасывая последовательность подтверждений.
+- Исключения одного цикла логируются, затем поток продолжает работу после processing interval.
+
+**`run()`**
+- Проверяет GUI-поддержку OpenCV и наличие DISPLAY/WAYLAND_DISPLAY, если GUI включён.
+- Создаёт окно OpenCV, запускает камеру и закрывает шлагбаум.
+- Стартует recognition_worker.
+- В основном потоке непрерывно читает кадры камеры, обновляет shared frame и отображает live video с рамками транспорта/номеров и последним распознанным текстом.
+- Выход по Q или Ctrl+C.
+- В finally выставляет stop_event, ждёт worker до 5 секунд, закрывает GUI, камеру и PWM/шлагбаум.
+
+**`main()`**
+- Создаёт LicensePlateSystem и запускает run().
+- Вызывается при запуске `python -m src.main`.
+
+### 3.2 `barrier/src/camera.py` — Camera
+
+- `__init__(width, height)`: сохраняет размер и пустую ссылку на Picamera2.
+- `start()`: создаёт Picamera2, конфигурирует video stream RGB888 с buffer_count=2, запускает камеру и ждёт секунду для автоэкспозиции.
+- `read()`: требует запущенную камеру, захватывает массив RGB и преобразует его в BGR через OpenCV.
+- `stop()`: останавливает и закрывает камеру, сбрасывает ссылку.
+
+### 3.3 `barrier/src/detector.py` — PlateDetector
+
+Один класс используется для двух ONNX моделей: plate detection и vehicle detection.
+
+- `__init__(model_path, input_size, confidence, nms_threshold, class_ids)`: создаёт ONNX Runtime InferenceSession с CPUExecutionProvider, сохраняет имя входа и параметры фильтрации.
+- `detect(frame)`: вычисляет масштаб letterbox, изменяет размер кадра с сохранением пропорций, дополняет квадратное полотно значением 114, строит нормализованный NCHW blob, запускает ONNX inference и передаёт выход парсеру.
+- `_parse_output(...)`: поддерживает выход N×6 (xyxy, score, class_id) и сырой YOLO-выход [4+C,N] / [N,4+C]. Применяет class_ids, confidence threshold и OpenCV NMS. Переводит координаты обратно в исходное изображение, обрезает их границами кадра и возвращает список `(x1, y1, x2, y2, confidence)`.
+
+Для vehicle detector передаются class IDs COCO: 2 car, 3 motorcycle, 5 bus, 7 truck. Для plate detector class_ids не ограничиваются.
+
+### 3.4 `barrier/src/ocr.py` — PlateOCR и FastPlateOCR
+
+Общие функции/константы:
+- `PLATE_LETTERS` и `PLATE_PATTERN`: формат одной буквы, трёх цифр, двух букв; разрешённые буквы соответствуют российскому формату.
+- `CYRILLIC_TO_LATIN`: таблица визуально совпадающих кириллических букв.
+- `DIGIT_MAP` и `LETTER_MAP`: контекстные замены похожих символов.
+- `WHITELIST`: символы, разрешённые Tesseract.
+- `PSM_MODES`: набор режимов для диагностического/вариантного распознавания.
+
+**PlateOCR**
+- `__init__(language, min_confidence)`: сохраняет параметры Tesseract.
+- `normalize(text)`: переводит в верхний регистр, заменяет визуально совпадающую кириллицу и удаляет всё, кроме латинских букв/цифр.
+- `extract_plate(text)`: ищет шестисимвольный фрагмент; исправляет похожие символы в позициях буквы/цифры и проверяет PLATE_PATTERN.
+- `add_border(image)`: добавляет белую рамку.
+- `preprocess(plate_image)`: создаёт 8 вариантов (увеличение, CLAHE, Otsu, adaptive threshold, sharpening, inverted Otsu) — вспомогательный тяжёлый путь для анализа.
+- `recognize_variant(image, psm)`: один вызов Tesseract image_to_data, фильтрует слова по confidence и возвращает raw text, найденный номер и среднюю уверенность.
+- `recognize_variants(image)`: прогоняет 8 вариантов по 4 PSM (до 32 вызовов), выбирает результат по числу совпадений и средней уверенности.
+- `recognize(plate_image)`: оптимизированный runtime путь: проверяет crop, переводит в grayscale, умеренно увеличивает, применяет blur и Otsu, добавляет border и выполняет максимум два вызова Tesseract (PSM 7 и 8). Возвращает первый валидный номер либо пустую строку.
+
+**FastPlateOCR**
+- `__init__(model_name, device)`: импортирует ONNXPlateRecognizer из fast-plate-ocr и загружает указанную Hub-модель на выбранное устройство.
+- `recognize(plate_image)`: проверяет crop, переводит BGR в grayscale при необходимости, вызывает model.run() и нормализует первый результат через PlateOCR.extract_plate(). Возвращает пустую строку, если вход пуст или предсказаний нет.
+
+В текущем YAML активен FastPlateOCR 0.3.x, модель `global-plates-mobile-vit-v2-model`, CPU. Tesseract остаётся альтернативным backend. Наличие кода не означает, что точность глобальной модели на конкретном российском датасете уже подтверждена.
+
+### 3.5 `barrier/src/access_control.py` — AccessControl
+
+- `__init__(allowed_plates_file, required_confirmations, cooldown_seconds)`: нормализует параметры, загружает whitelist, инициализирует last_plate, confirmation_count и last_open_time.
+- `normalize(plate)`: classmethod; верхний регистр, кириллица → латиница для визуально совпадающих символов, удаление пробелов/разделителей и прочих не буквенно-цифровых знаков.
+- `_load_allowed_plates()`: создаёт родительский каталог и файл при отсутствии, игнорирует пустые и comment-строки, возвращает set нормализованных номеров.
+- `is_allowed(plate)`: проверяет нормализованный номер в whitelist.
+- `confirm_plate(plate)`: неизвестный/пустой номер сбрасывает счётчик; одинаковые последовательные разрешённые номера увеличивают счётчик, смена номера начинает его заново. После достижения порога проверяется monotonic cooldown. Если cooldown истёк, метод сбрасывает последовательность, обновляет last_open_time и возвращает True.
+
+Текущий whitelist содержит шесть записей: A123BC, B456CD, C789EF, C007CY, M777PO, O001OO. В YAML сейчас `required_confirmations: 1`, `cooldown_seconds: 1`.
+
+### 3.6 `barrier/src/barrier.py` — HardwareServo и Barrier
+
+**HardwareServo**
+- `__init__(...)`: проверяет частоту, общий диапазон импульсов и период, сохраняет калибровку, создаёт rpi_hardware_pwm.HardwarePWM и запускает PWM на начальном угле.
+- `_angle_to_duty(angle)`: линейно переводит угол 0–180° в duty cycle на основе min/max pulse width.
+- `set_pulse_width_ms(pulse_width_ms)`: задаёт точную длительность импульса; проверяет, что она положительна и короче периода PWM.
+- `angle` property: getter возвращает сохранённый угол; setter ограничивает угол диапазоном 0–180 и обновляет duty cycle.
+- `close()`: останавливает PWM.
+
+**Barrier**
+- `__init__(...)`: сохраняет углы, длительность открытия и состояние, создаёт HardwareServo и переводит механизм в закрытое состояние.
+- `open()`: применяет точный opened pulse, если он задан, иначе opened_angle; устанавливает close_at.
+- `close()`: применяет closed pulse или closed_angle, сбрасывает состояние и таймер.
+- `keep_open(duration)`: продлевает таймер только если шлагбаум уже открыт.
+- `update(vehicle_present)`: ничего не делает при закрытом состоянии; при наличии транспорта продлевает таймер, иначе закрывает при истечении close_at.
+- `open_for(duration)`: неблокирующее открытие с таймером.
+- `stop()`: переводит механизм в закрытое положение и останавливает PWM.
+
+В конфигурации частота 50 Hz, pwmchip 0, channel 1, BCM GPIO13. Явно заданные импульсы `closed_pulse_width_ms=2.35` и `opened_pulse_width_ms=1.5`. Точный импульс валидируется относительно PWM period (20 ms при 50 Hz), а не min/max диапазона, используемого преобразованием угла. Поэтому закрывающий импульс 2.35 ms может быть больше `max_pulse_width_ms=2.0` и всё равно принимается текущим кодом.
+
+### 3.7 `barrier/src/logger.py` — setup_logger
+
+- `setup_logger(name)`: создаёт `data/logs/`, настраивает INFO logger, консольный StreamHandler и RotatingFileHandler для `data/logs/barrier.log` (2,000,000 bytes, 3 backups). Если handlers уже существуют, возвращает существующий logger без дублирования.
+
+### 3.8 `barrier/src/__init__.py`
+
+Содержит docstring пакета runtime; самостоятельной логики нет.
+
+## 4. Потоки исполнения и взаимодействие
+
+```mermaid
+flowchart TD
+    A["main()"] --> B["LicensePlateSystem.__init__()"]
+    B --> C["run()"]
+    C --> D["Camera.start() + Barrier.close()"]
+    C --> E["GUI / main thread"]
+    C --> F["recognition_worker thread"]
+    E --> G["Camera.read()"]
+    G --> H["Publish latest_frame under lock"]
+    H --> E
+    F --> I["Copy latest_frame under lock"]
+    I --> J["Vehicle ONNX detector"]
+    J --> K["Plate ONNX detector"]
+    K --> L["Sort plate boxes"]
+    L --> M["OCR on plate crop"]
+    M --> N["AccessControl.confirm_plate()"]
+    N -->|allowed, confirmed, cooldown elapsed| O["Barrier.open_for()"]
+    J --> P["Barrier.update(vehicle_present)"]
+    E --> Q["OpenCV imshow() / waitKey()"]
+    Q -->|Q pressed| R["Set stop_event"]
+    R --> S["Join worker; close GUI, camera and PWM"]
 ```
 
----
+Синхронизация кадров и последних результатов выполняется через один `threading.Lock`. GUI читает последний опубликованный набор детекций; worker не управляет GUI напрямую. Видеопоток не зависит от длительности инференса, но частота обновления результатов ограничена скоростью детекторов и `processing.interval_seconds`.
 
-### 9. barrier/config/allowed_plates.txt
+## 5. Текущая конфигурация runtime
 
-```
-A123BC
-B456CD
-C789EF
-C007CY
-M777PO
-O001OO
-```
+| Параметр | Значение |
+|---|---|
+| Камера | 640×480, RGB888 на входе Picamera2 |
+| Plate detector | `models/license-plate-finetune-v1n.onnx` |
+| Vehicle detector | `models/yolov8n.onnx` |
+| Plate input size | 640 |
+| Plate confidence / NMS | 0.45 / 0.45 |
+| Vehicle confidence / NMS | 0.35 / 0.45 |
+| Vehicle class IDs | 2, 3, 5, 7 |
+| OCR backend | `fast_plate_ocr` |
+| OCR model | `global-plates-mobile-vit-v2-model` |
+| OCR device | CPU |
+| Confirmations / cooldown | 1 / 1 second |
+| PWM | chip 0, channel 1, 50 Hz |
+| Servo pulse closed / opened | 2.35 ms / 1.5 ms |
+| Barrier open duration | 2 seconds |
+| GUI | enabled |
+| Processing interval | 0.5 seconds |
 
----
+Значения отражают текущий файл YAML, не гарантируют фактическую производительность или механическую совместимость на другом устройстве.
 
-### 10. barrier/tests/test_access_control.py
+## 6. Конфигурация и пути
 
-| Тест | Проверяет |
-|------|-----------|
-| test_allowed_plate | is_allowed() — нормализация, case-insensitive, неразрешённый |
-| test_confirmation_required | confirm_plate() — нужно N подтверждений |
-| test_unknown_plate_resets_confirmation | Чужой номер сбрасывает счётчик |
+- Все runtime-пути модели и whitelist в YAML заданы относительно `barrier/`, так как PROJECT_DIR — каталог `barrier`.
+- Конфигурация загружается из `barrier/config/settings.yaml`.
+- Whitelist: `barrier/config/allowed_plates.txt`.
+- Логи: относительный путь `data/logs/barrier.log`; при стандартном запуске из `barrier/` это `barrier/data/logs/barrier.log`.
+- Windows config paths вычисляются относительно `barrier/windows/`.
 
----
+## 7. Windows-подпроект
 
-### 11. barrier/tests/test_plate_normalization.py
+Windows-часть — offline pipeline для проверки plate detector и Tesseract OCR на наборе размеченных изображений. Она не импортирует Raspberry Pi runtime и не включает GPIO/servo control.
 
-| Тест | Проверяет |
-|------|-----------|
-| test_access_normalization | AccessControl.normalize() |
-| test_ocr_normalization | PlateOCR.normalize() |
+### `barrier/windows/src/main.py`
+- `load_config()`: загружает `config/settings.yaml`.
+- `main()`: парсит `--show`, проверяет модель, папку изображений и labels CSV; создаёт PlateDetector, PlateOCR и DatasetEvaluator; запускает оценку. При `--show` последовательно показывает сохранённые annotated images.
 
----
+### `barrier/windows/src/detector.py`
+- `PlateDetector.__init__()`: создаёт ONNX Runtime CPU session, сохраняет input name и формат выхода.
+- `detect(frame)`: letterbox preprocessing, ONNX inference, вызов parser, печать найденных боксов.
+- `_parse(...)`: поддерживает конфигурируемые форматы `auto`, `nms`, `yolo`; применяет confidence, NMS, восстанавливает координаты crop.
 
-### 12. requirements.txt
+### `barrier/windows/src/ocr.py`
+- `normalize_plate()`: верхний регистр, кириллица → латиница, удаление разделителей.
+- `extract_plate()`: извлечение номера по шаблону с позиционными заменами похожих символов.
+- `PlateOCR.__init__()`: сохраняет язык/confidence и необязательный путь к tesseract.exe.
+- `add_border()`: белое поле вокруг изображения.
+- `preprocess()`: 8 вариантов изображения.
+- `recognize_variant()`: один Tesseract проход, извлечение текста и confidence.
+- `recognize()`: перебирает 8 вариантов × 4 PSM; если кандидатов нет, повторяет цикл для JPEG-копии качества 95; выбирает номер голосованием и confidence.
 
-```
-numpy>=1.26,<3
-opencv-python-headless>=4.9,<5
-onnxruntime>=1.17,<2
-pytesseract>=0.3.10,<0.4
-gpiozero>=2.0,<3
-PyYAML>=6.0,<7
-huggingface_hub>=0.23,<2
-libcap-dev
-picamera2
-python3-opencv
-```
+### `barrier/windows/src/evaluate.py`
+- `calculate_iou(box_a, box_b)`: вычисляет Intersection over Union.
+- `DatasetEvaluator.__init__()`: сохраняет зависимости/пути и создаёт results directory.
+- `load_labels()`: читает CSV, требует image и plate, опционально читает x1/y1/x2/y2.
+- `evaluate()`: загружает каждое изображение, запускает детектор и OCR для найденных crop, выбирает распознанный результат с максимальным detector confidence, считает exact match и IoU, сохраняет crops/annotated images и формирует строки результата.
+- `save_results()`: записывает `results/results.csv`.
+- `print_summary()`: выводит detection coverage, end-to-end exact OCR accuracy и IoU success для строк с ground-truth bbox.
 
----
+### Windows tests и диагностические скрипты
+- `tests/test_normalization.py`: pytest проверки нормализации и IoU.
+- `tests/test_ocr.py`: самостоятельный диагностический запуск Tesseract по crop, вариантам предобработки и PSM; не unit-тест.
+- `tests/test_ocr_1.py`: самостоятельный анализ яркости, компонент, порогов и Tesseract; не unit-тест.
+- `tests/test_rectification.py`: содержит функции сглаживания, аппроксимации границ, выпрямления и batch-диагностики crop; основной сценарий запускается как скрипт. Он использует существующий PlateOCR без изменения OCR-алгоритма.
+- `tests/__init__.py`: пакетный marker.
 
-## Граф зависимостей (barrier/)
+Dataset в Git содержит четыре изображения `1.jpg`–`4.jpg` и `labels.csv`. Windows README описывает пример CSV, метрики и отдельную установку Tesseract.
 
-```
-main.py:main()
-  |-- LicensePlateSystem.__init__()
-        |-- setup_logger() -> logger.py
-        |-- load_config() -> settings.yaml
-        |-- Camera.start() -> camera.py (Picamera2)
-        |-- PlateDetector.__init__() -> detector.py (ONNX Runtime)
-        |-- PlateOCR.__init__() -> ocr.py (Tesseract)
-        |-- AccessControl.__init__() -> access_control.py
-              |-- _load_allowed_plates() -> allowed_plates.txt
-        |-- Barrier.__init__() -> barrier.py (gpiozero)
-  |-- LicensePlateSystem.run()
-        |-- camera.start()
-        |-- barrier.close()
-        |-- Thread(recognition_worker)
-              |-- (loop: wait interval)
-              |-- camera.read() -> latest_frame
-              |-- detector.detect() -> boxes
-              |-- barrier.update(vehicle_present)
-              |-- for box in boxes:
-                    |-- crop = frame[y1:y2, x1:x2]
-                    |-- ocr.recognize(crop) -> plate
-                    |-- access.confirm_plate(plate) -> grant?
-                          |-- barrier.open_for()
-              |-- if no plate: access.confirm_plate("")
-        |-- Main loop:
-              |-- camera.read() -> display
-              |-- cv2.imshow()
-              |-- waitKey(q)
-        |-- Shutdown: stop_event, join, destroyAllWindows, camera.stop(), barrier.stop()
-```
+## 8. Runtime tests
 
----
+`barrier/tests/test_access_control.py`:
+- `test_allowed_plate`: разрешённый номер и отрицательная проверка неизвестного номера.
+- `test_confirmation_required`: подтверждение только после заданного количества последовательных совпадений.
+- `test_unknown_plate_resets_confirmation`: неизвестный номер сбрасывает счётчик.
 
-## Поток данных (Runtime)
+`barrier/tests/test_plate_normalization.py`:
+- `test_access_normalization`: нормализация в AccessControl.
+- `test_ocr_normalization`: нормализация в PlateOCR.
 
-```
-settings.yaml + allowed_plates.txt
-        |
-        v
-LicensePlateSystem.__init__()
-        |
-        v
-+------------------+     +------------------+
-| Camera thread    |     | Recognition      |
-| (main thread)    |     | Worker (daemon)  |
-|                  |     |                  |
-| camera.read()    |     | detector.detect()|
-| -> latest_frame  |---->| -> boxes         |
-| cv2.imshow()     |     | barrier.update() |
-| waitKey(q)       |     | ocr.recognize()  |
-|                  |     | -> plate         |
-|                  |     | access.confirm() |
-|                  |     | -> barrier.open()|
-+------------------+     +------------------+
-        |
-        v
-Graceful shutdown
-```
+Эти тесты не являются интеграционными тестами оборудования или точности моделей.
 
----
+## 9. Зависимости
 
-## Windows-подпроект (barrier/windows/) — Сводка
+Корневой `requirements.txt`:
+- numpy
+- opencv-python (GUI build)
+- onnxruntime
+- pytesseract
+- PyYAML
+- huggingface_hub
+- rpi-hardware-pwm
+- fast-plate-ocr 0.3.x
 
-Отдельная реализация для **оценки качества** на датасете:
+`requirements-model-tools.txt` содержит Ultralytics только для экспорта модели на отдельном ПК.
 
-| Файл | Отличие от barrier/ |
-|------|---------------------|
-| src/detector.py | Добавил output_format (auto/yolo/nms), логирование |
-| src/ocr.py | Добавил tesseract_cmd, более детальное логирование, preprocess публичный |
-| src/evaluate.py | DatasetEvaluator — полная оценка на датасете (IoU, crops, annotated) |
-| src/main.py | CLI для запуска оценки, --show флаг |
-| tests/test_rectification.py | Выпрямление номеров (Sobel + квадратичная аппроксимация + remap) |
-| tests/test_ocr_1.py | Глубокая диагностика: thresholds, adaptive, illumination, profiles |
-| config/settings.yaml | Добавил dataset, evaluation секции |
+`barrier/windows/requirements.txt` содержит numpy, opencv-python, onnxruntime, pytesseract, PyYAML и pytest. Windows-подпроект не устанавливает Raspberry Pi PWM package или FastPlateOCR.
 
----
+## 10. Логирование и диагностика
 
-## Ключевые архитектурные решения
+Runtime logger пишет INFO в консоль и rotating file. В `main.py` измеряются:
+- совместное время двух ONNX детекторов за один цикл;
+- время OCR для обработанного crop;
+- события распознанного номера и решения AccessControl.
 
-### 1. Разделение потоков (Camera vs Recognition)
-- **Main thread**: камера + UI (OpenCV window) — 30+ FPS
-- **Worker thread**: детекция + OCR + доступ — каждые 2 сек
-- **Lock-free frame passing** через threading.Lock + копирование
+Ошибки worker логируются с traceback, после чего цикл может продолжиться. Фатальные ошибки инициализации компонентов возникают при создании LicensePlateSystem; ошибки в run() логируются и приводят к очистке ресурсов.
 
-### 2. Barrier state machine
-- vehicle_present продлевает открытие (не закрывает пока машина там)
-- Cooldown после открытия защищает от дребезга
-- Неблокирующий open_for() — worker не ждёт серво
+## 11. Известные ограничения, требующие внимания
 
-### 3. OCR Robustness
-- 8 предобработок × 4 PSM = 32 попытки
-- Голосование: majority vote + средняя уверенность
-- Позиционные карты исправлений (буквы/цифры по местам)
-- Fallback через JPEG 95
-
-### 4. Universal YOLO Parser
-- Поддержка обоих форматов: NMS-ready [N,6] и raw YOLO [4+C, N]
-- Автоопределение без конфига
-
-### 5. Access Control Logic
-- Нормализация на входе (кириллица→латиница)
-- Подтверждения: N раз подряд тот же номер
-- Cooldown: защита от повторного открытия
-- Сброс счётчика при смене номера или неизвестном
-
----
-
-## Метрики и качество
-
-### Windows evaluation (barrier/windows/)
-- **Detection Coverage**: detected/total
-- **Exact OCR Accuracy**: exact_match/total (end-to-end)
-- **Detection IoU Success**: iou_match/bbox_records @ 0.5
-
-### Runtime логирование
-- ACCESS GRANTED: {plate} — успешное открытие
-- Recognized plate: {plate} | YOLO confidence: {conf}
-- Access not granted: {plate} — в whitelist, но не прошло подтверждения
-- Ошибки с трейсом в data/logs/barrier.log (2MB, 3 бэкапа)
-
----
+1. `required_confirmations: 1` в текущем YAML допускает открытие после одного успешного распознавания из whitelist.
+2. Vehicle detector используется для продления уже открытого положения, но это не физический датчик проезда.
+3. Runtime обрабатывает не более одного распознанного plate crop за цикл.
+4. FastPlateOCR global model не гарантирует оптимальную точность на локальном формате номеров; требуется проверка на репрезентативном датасете.
+5. Обработка YOLO идёт последовательно на CPU; GUI может обновляться чаще, чем результаты детекции.
+6. Калибровка сервопривода зависит от экземпляра SG-90, питания и механической нагрузки.
+7. В текущем коде точные импульсы closed/open проверяются относительно PWM периода, а не min/max pulse-width диапазона углов.
+8. Автоматическое закрытие/удержание не заменяет аппаратные interlock, концевики и anti-crush.

@@ -1,0 +1,3 @@
+# Optional: only needed on a development PC to export YOLOv8n to ONNX.
+# Do not install this file on Raspberry Pi for normal inference.
+ultralytics>=8.3,<9

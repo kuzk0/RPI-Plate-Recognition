@@ -10,10 +10,12 @@ class PlateDetector:
         input_size: int = 640,
         confidence: float = 0.45,
         nms_threshold: float = 0.45,
+        class_ids=None,
     ):
         self.input_size = input_size
         self.confidence = confidence
         self.nms_threshold = nms_threshold
+        self.class_ids = None if class_ids is None else {int(value) for value in class_ids}
 
         self.session = ort.InferenceSession(
             model_path,
@@ -105,8 +107,10 @@ class PlateDetector:
             scores = []
 
             for row in rows:
-                x1, y1, x2, y2, score, _class_id = row[:6]
+                x1, y1, x2, y2, score, class_id = row[:6]
 
+                if self.class_ids is not None and int(class_id) not in self.class_ids:
+                    continue
                 if score < self.confidence:
                     continue
 
@@ -136,8 +140,11 @@ class PlateDetector:
             for row in rows:
                 cx, cy, box_width, box_height = row[:4]
                 class_scores = row[4:]
-                score = float(np.max(class_scores))
+                class_id = int(np.argmax(class_scores))
+                score = float(class_scores[class_id])
 
+                if self.class_ids is not None and class_id not in self.class_ids:
+                    continue
                 if score < self.confidence:
                     continue
 

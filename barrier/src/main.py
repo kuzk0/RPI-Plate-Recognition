@@ -1,4 +1,5 @@
 
+import os
 import threading
 import time
 from pathlib import Path
@@ -8,7 +9,7 @@ import yaml
 
 from src.camera import Camera
 from src.detector import PlateDetector
-from src.ocr import PlateOCR
+from src.ocr import PlateOCR, FastPlateOCR
 from src.access_control import AccessControl
 from src.barrier import Barrier
 from src.logger import setup_logger
@@ -23,6 +24,10 @@ class LicensePlateSystem:
     def __init__(self):
         self.logger = setup_logger()
         self.config = self.load_config()
+
+        # GUI display is enabled by default; use opencv-python (not headless).
+        display_cfg = self.config.get("display", {})
+        self.display_enabled = bool(display_cfg.get("enabled", True))
 
         # Camera
         camera_cfg = self.config["camera"]
@@ -46,18 +51,41 @@ class LicensePlateSystem:
             model_path=str(model_path),
             input_size=detector_cfg.get("input_size", 640),
             confidence=detector_cfg.get("confidence", 0.45),
-            nms_threshold=detector_cfg.get(
-                "nms_threshold", 0.45
-            ),
+            nms_threshold=detector_cfg.get("nms_threshold", 0.45),
+        )
+
+        vehicle_model_path = PROJECT_DIR / detector_cfg.get(
+            "vehicle_model_path", "models/yolov8n.onnx"
+        )
+        if not vehicle_model_path.exists():
+            raise FileNotFoundError(
+                f"Vehicle detection model not found: {vehicle_model_path}. "
+                "Download yolov8n.onnx as described in README.md."
+            )
+        self.vehicle_detector = PlateDetector(
+            model_path=str(vehicle_model_path),
+            input_size=detector_cfg.get("vehicle_input_size", 640),
+            confidence=detector_cfg.get("vehicle_confidence", 0.35),
+            nms_threshold=detector_cfg.get("vehicle_nms_threshold", 0.45),
+            class_ids=(2, 3, 5, 7),
         )
 
         # OCR
         ocr_cfg = self.config["ocr"]
 
-        self.ocr = PlateOCR(
-            language=ocr_cfg.get("language", "eng"),
-            min_confidence=ocr_cfg.get("min_confidence", 0),
-        )
+        ocr_backend = ocr_cfg.get("backend", "tesseract").lower()
+        if ocr_backend == "fast_plate_ocr":
+            self.ocr = FastPlateOCR(
+                model_name=ocr_cfg.get("model_name", "cct-xs-v2-global-model"),
+                device=ocr_cfg.get("device", "cpu"),
+            )
+        elif ocr_backend == "tesseract":
+            self.ocr = PlateOCR(
+                language=ocr_cfg.get("language", "eng"),
+                min_confidence=ocr_cfg.get("min_confidence", 0),
+            )
+        else:
+            raise ValueError(f"Unsupported OCR backend: {ocr_backend}")
 
         # Access control
         access_cfg = self.config["access"]
@@ -85,10 +113,16 @@ class LicensePlateSystem:
         barrier_cfg = self.config["barrier"]
 
         self.barrier = Barrier(
-            gpio_pin=barrier_cfg.get("gpio_pin", 18),
+            pwm_channel=barrier_cfg.get("pwm_channel", 1),
+            pwm_chip=barrier_cfg.get("pwm_chip", 0),
+            frequency_hz=barrier_cfg.get("frequency_hz", 50),
+            min_pulse_width_ms=barrier_cfg.get("min_pulse_width_ms", 1.0),
+            max_pulse_width_ms=barrier_cfg.get("max_pulse_width_ms", 2.0),
             closed_angle=barrier_cfg.get("closed_angle", 180),
             opened_angle=barrier_cfg.get("opened_angle", 90),
             open_duration=barrier_cfg.get("open_duration", 10),
+            closed_pulse_width_ms=barrier_cfg.get("closed_pulse_width_ms"),
+            opened_pulse_width_ms=barrier_cfg.get("opened_pulse_width_ms"),
         )
 
         # Processing
@@ -106,6 +140,10 @@ class LicensePlateSystem:
         self.latest_frame = None
         self.result_frame = None
         self.result_until = 0.0
+        self.latest_vehicle_detections = []
+        self.latest_plate_detections = []
+        self.recognized_text = ""
+        self.recognized_until = 0.0
 
         self.stop_event = threading.Event()
         self.worker = None
@@ -143,8 +181,15 @@ class LicensePlateSystem:
                 continue
 
             try:
-                # YOLO detection
+                # Both detectors run in the worker; GUI keeps rendering camera frames.
+                detection_started = time.perf_counter()
+                vehicle_detections = self.vehicle_detector.detect(frame)
                 detections = self.detector.detect(frame)
+                detection_elapsed = time.perf_counter() - detection_started
+                self.logger.info("YOLO detection completed in %.3f s", detection_elapsed)
+                with self.frame_lock:
+                    self.latest_vehicle_detections = vehicle_detections
+                    self.latest_plate_detections = detections
 
                 # Сортируем по confidence
                 detections = sorted(
@@ -155,7 +200,7 @@ class LicensePlateSystem:
 
                 # Наличие обнаруженной номерной рамки.
                 # Пока рамка видна, продлеваем открытое состояние.
-                vehicle_present = len(detections) > 0
+                vehicle_present = len(vehicle_detections) > 0
 
                 self.barrier.update(
                     vehicle_present=vehicle_present
@@ -184,7 +229,10 @@ class LicensePlateSystem:
                     if crop.size == 0:
                         continue
 
+                    ocr_started = time.perf_counter()
                     plate = self.ocr.recognize(crop)
+                    ocr_elapsed = time.perf_counter() - ocr_started
+                    self.logger.info("OCR completed in %.3f s", ocr_elapsed)
 
                     if not plate:
                         continue
@@ -222,11 +270,8 @@ class LicensePlateSystem:
                     )
 
                     with self.frame_lock:
-                        self.result_frame = display_frame
-                        self.result_until = (
-                            time.monotonic()
-                            + self.result_display_seconds
-                        )
+                        self.recognized_text = plate
+                        self.recognized_until = time.monotonic() + self.result_display_seconds
 
                     # Проверка доступа
                     if self.access.confirm_plate(plate):
@@ -270,7 +315,33 @@ class LicensePlateSystem:
             "Starting license plate recognition system"
         )
 
+        window_name = "License Plate Recognition"
+        window_created = False
+
         try:
+            if self.display_enabled:
+                build_info = cv2.getBuildInformation()
+                gui_line = next(
+                    (line.strip() for line in build_info.splitlines()
+                     if line.strip().startswith("GUI:")),
+                    "GUI: unknown",
+                )
+                if "NONE" in gui_line.upper():
+                    raise RuntimeError(
+                        "OpenCV was installed without GUI support. "
+                        "Install opencv-python and remove opencv-python-headless."
+                    )
+                if not (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")):
+                    raise RuntimeError(
+                        "No desktop display session detected (DISPLAY/WAYLAND_DISPLAY is unset). "
+                        "Run the application from the Raspberry Pi OS desktop session."
+                    )
+                cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+                window_created = True
+                self.logger.info("Video window created. Press Q to exit.")
+            else:
+                self.logger.info("Video display disabled by configuration.")
+
             self.camera.start()
 
             self.barrier.close()
@@ -283,17 +354,6 @@ class LicensePlateSystem:
 
             self.worker.start()
 
-            window_name = "License Plate Recognition"
-
-            cv2.namedWindow(
-                window_name,
-                cv2.WINDOW_NORMAL,
-            )
-
-            self.logger.info(
-                "Video window started. Press Q to exit."
-            )
-
             while not self.stop_event.is_set():
 
                 # Камера продолжает работать независимо
@@ -305,31 +365,35 @@ class LicensePlateSystem:
                     continue
 
                 with self.frame_lock:
-
                     self.latest_frame = frame.copy()
+                    vehicle_boxes = list(self.latest_vehicle_detections)
+                    plate_boxes = list(self.latest_plate_detections)
+                    recognized_text = self.recognized_text if time.monotonic() < self.recognized_until else ""
 
-                    if (
-                        self.result_frame is not None
-                        and time.monotonic() < self.result_until
-                    ):
-                        display_frame = self.result_frame.copy()
+                if self.display_enabled:
+                    display_frame = frame.copy()
+                    height, width = display_frame.shape[:2]
+                    for x1, y1, x2, y2, score in vehicle_boxes:
+                        x1, y1, x2, y2 = map(int, (x1, y1, x2, y2))
+                        cv2.rectangle(display_frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                        cv2.putText(display_frame, f"Vehicle {score:.2f}", (x1, max(20, y1 - 8)),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2, cv2.LINE_AA)
+                    for x1, y1, x2, y2, score in plate_boxes:
+                        x1, y1, x2, y2 = map(int, (x1, y1, x2, y2))
+                        cv2.rectangle(display_frame, (x1, y1), (x2, y2), (255, 120, 0), 2)
+                        cv2.putText(display_frame, f"Plate {score:.2f}", (x1, min(height - 5, y2 + 18)),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 120, 0), 2, cv2.LINE_AA)
+                    if recognized_text:
+                        cv2.putText(display_frame, recognized_text, (12, 28),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2, cv2.LINE_AA)
+                    cv2.imshow(window_name, display_frame)
+                    key = cv2.waitKey(1) & 0xFF
 
-                    else:
-                        self.result_frame = None
-                        display_frame = frame.copy()
-
-                cv2.imshow(
-                    window_name,
-                    display_frame,
-                )
-
-                key = cv2.waitKey(1) & 0xFF
-
-                if key == ord("q"):
-                    self.logger.info(
-                        "Exit requested by user"
-                    )
-                    break
+                    if key == ord("q"):
+                        self.logger.info(
+                            "Exit requested by user"
+                        )
+                        break
 
         except KeyboardInterrupt:
             self.logger.info("Keyboard interrupt")
@@ -345,12 +409,13 @@ class LicensePlateSystem:
             if self.worker is not None:
                 self.worker.join(timeout=5.0)
 
-            try:
-                cv2.destroyAllWindows()
-            except cv2.error:
-                self.logger.warning(
-                    "OpenCV windows could not be closed"
-                )
+            if window_created:
+                try:
+                    cv2.destroyAllWindows()
+                except cv2.error:
+                    self.logger.warning(
+                        "OpenCV windows could not be closed"
+                    )
 
             try:
                 self.camera.stop()

@@ -7,8 +7,16 @@ detector:
   input_size: 640
   confidence: 0.45
   nms_threshold: 0.45
+  vehicle_model_path: models/yolov8n.onnx
+  vehicle_input_size: 640
+  vehicle_confidence: 0.35
+  vehicle_nms_threshold: 0.45
 
 ocr:
+  # Experimental neural OCR; switch to "tesseract" to use the stable backend.
+  backend: fast_plate_ocr
+  model_name: global-plates-mobile-vit-v2-model
+  device: cpu
   language: eng
   min_confidence: 0
 
@@ -18,10 +26,21 @@ access:
   cooldown_seconds: 1
 
 barrier:
-  gpio_pin: 18
+  pwm_channel: 1
+  pwm_chip: 0
+  frequency_hz: 50
+  min_pulse_width_ms: 1.0
+  max_pulse_width_ms: 2.0
+  # Calibrate with the servo horn disconnected from the mechanism.
+  closed_pulse_width_ms: 2.35
+  opened_pulse_width_ms: 1.5
   closed_angle: 180
   opened_angle: 90
-  open_duration: 7
+  open_duration: 2
+
+display:
+  # Requires GUI-enabled opencv-python and a Raspberry Pi OS desktop session
+  enabled: true
 
 processing:
-  interval_seconds: 2
+  interval_seconds: 0.5
